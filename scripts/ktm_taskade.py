@@ -15,7 +15,7 @@ import pytz
 # -------- Config --------
 MYT_TZ = pytz.timezone("Asia/Kuala_Lumpur")
 GTFSR_URL = "https://api.data.gov.my/gtfs-realtime/vehicle-position/ktmb"
-DASHBOARD_TITLE = "KTM Live Status Dashboard"
+DASHBOARD_TITLE = "KTM Train Status Live Update"
 CONTENT_MARKER = "<!-- DASHBOARD:KTM -->"
 
 # Taskade API - using correct endpoints from Colab learnings
@@ -182,7 +182,7 @@ class TaskadeClient:
             "Content-Type": "application/json",
         }
 
-    def create_task(self, project_id: str, content_md: str) -> Dict[str, Any]:
+    def create_task(self, project_id: str, content_md: str, title: str = None) -> Dict[str, Any]:
         # Using correct Taskade API structure from Colab learnings
         url = f"{self.base}/projects/{project_id}/tasks"
         payload = {
@@ -190,7 +190,8 @@ class TaskadeClient:
                 "taskId": None,
                 "placement": "afterbegin",
                 "contentType": "text/markdown",
-                "content": content_md
+                "content": content_md,
+                "title": title or DASHBOARD_TITLE
             }]
         }
         
@@ -239,10 +240,19 @@ class TaskadeClient:
 
     def find_task_by_title(self, project_id: str, title: str) -> Optional[Dict[str, Any]]:
         items = self.list_tasks(project_id)
+        logger.info(f"Searching through {len(items)} tasks for title: '{title}'")
         for it in items:
             t = (it.get("title") or "").strip()
-            if t == title:
+            logger.info(f"Found task with title: '{t}'")
+            # Exact match (case insensitive)
+            if t.lower() == title.lower():
+                logger.info(f"✅ Found exact matching task: {t}")
                 return it
+            # Partial match for KTM dashboard tasks
+            if "ktm" in t.lower() and "status" in t.lower() and "update" in t.lower():
+                logger.info(f"✅ Found KTM dashboard task by partial match: {t}")
+                return it
+        logger.info("No matching task found")
         return None
 
 
@@ -287,7 +297,7 @@ def main() -> int:
 
         # Create new task if not found
         logger.info("No existing task found. Creating a new dashboard task.")
-        created = client.create_task(TASKADE_PROJECT_ID, content_md)
+        created = client.create_task(TASKADE_PROJECT_ID, content_md, DASHBOARD_TITLE)
         new_id = str(created.get("id") or created.get("task_id") or "")
         if new_id:
             logger.info(f"✅ Created task id={new_id}")
