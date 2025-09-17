@@ -213,17 +213,17 @@ class TaskadeClient:
             logger.error("Please check the DEBUG output above to see the actual API response.")
             raise
 
-    def update_task(self, task_id: str, content_md: str) -> Dict[str, Any]:
-        # Using correct Taskade API structure from Colab learnings
-        url = f"{self.base}/tasks/{task_id}"
+    def update_task(self, project_id: str, task_id: str, content_md: str) -> Dict[str, Any]:
+        # Using correct Taskade API endpoint for updating task content
+        url = f"{self.base}/projects/{project_id}/tasks/{task_id}/note"
         payload = {"content": content_md}
         
-        logger.info(f"Updating task {task_id} at {url}")
+        logger.info(f"Updating task {task_id} content at {url}")
         resp = http_request("PUT", url, self.headers, json_body=payload)
         if resp.status_code not in (200, 204):
             raise RuntimeError(f"Update task failed: {resp.status_code} {resp.text}")
         
-        logger.info(f"✅ Successfully updated task {task_id}")
+        logger.info(f"✅ Successfully updated task {task_id} content")
         return {"task_id": task_id}
 
     def list_tasks(self, project_id: str) -> List[Dict[str, Any]]:
@@ -238,12 +238,26 @@ class TaskadeClient:
             return data
         return []
 
+    def get_task(self, project_id: str, task_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific task by ID"""
+        url = f"{self.base}/projects/{project_id}/tasks/{task_id}"
+        try:
+            resp = http_request("GET", url, self.headers)
+            if resp.status_code == 200:
+                return resp.json()
+            else:
+                logger.warning(f"Failed to get task {task_id}: {resp.status_code}")
+                return None
+        except Exception as e:
+            logger.warning(f"Error getting task {task_id}: {e}")
+            return None
+
     def find_task_by_title(self, project_id: str, title: str) -> Optional[Dict[str, Any]]:
         items = self.list_tasks(project_id)
         logger.info(f"Searching through {len(items)} tasks for title: '{title}'")
         for it in items:
             t = (it.get("title") or "").strip()
-            logger.info(f"Found task with title: '{t}'")
+            logger.info(f"Found task with title: '{t}' (ID: {it.get('id', 'unknown')})")
             # Exact match (case insensitive)
             if t.lower() == title.lower():
                 logger.info(f"✅ Found exact matching task: {t}")
@@ -275,12 +289,18 @@ def main() -> int:
 
         task_id = TASKADE_TASK_ID.strip() if TASKADE_TASK_ID else ""
         
-        # If we have a task ID, update existing task
+        # If we have a task ID, verify it exists and update existing task
         if task_id:
-            logger.info(f"Updating existing Taskade task: {task_id}")
-            client.update_task(task_id, content_md)
-            logger.info("✅ Update complete")
-            return 0
+            logger.info(f"Verifying task exists: {task_id}")
+            existing_task = client.get_task(TASKADE_PROJECT_ID, task_id)
+            if existing_task:
+                logger.info(f"✅ Task {task_id} exists, updating content")
+                client.update_task(TASKADE_PROJECT_ID, task_id, content_md)
+                logger.info("✅ Update complete")
+                return 0
+            else:
+                logger.warning(f"⚠️ Task {task_id} not found, will search for existing task or create new one")
+                task_id = ""  # Clear the task_id so we fall through to search logic
 
         # Fallback: search for existing task by title
         logger.info(f"Searching for existing task titled '{DASHBOARD_TITLE}' in project {TASKADE_PROJECT_ID}")
@@ -291,12 +311,30 @@ def main() -> int:
                 logger.warning("Found task by title but could not determine its ID field; updating may not be possible.")
             else:
                 logger.info(f"Found existing task id={discovered_id}; updating.")
-                client.update_task(discovered_id, content_md)
+                client.update_task(TASKADE_PROJECT_ID, discovered_id, content_md)
                 print(json.dumps({"TASKADE_TASK_ID": discovered_id}))
                 return 0
 
-        # Create new task if not found
-        logger.info("No existing task found. Creating a new dashboard task.")
+        # Final check: look for ANY existing KTM dashboard tasks before creating
+        logger.info("Performing final check for any existing KTM dashboard tasks...")
+        all_tasks = client.list_tasks(TASKADE_PROJECT_ID)
+        ktm_tasks = [t for t in all_tasks if "ktm" in (t.get("title") or "").lower() and "status" in (t.get("title") or "").lower()]
+        
+        if ktm_tasks:
+            logger.warning(f"Found {len(ktm_tasks)} existing KTM dashboard tasks:")
+            for task in ktm_tasks:
+                logger.warning(f"  - {task.get('title')} (ID: {task.get('id')})")
+            # Use the first one found
+            first_task = ktm_tasks[0]
+            task_id = str(first_task.get("id") or first_task.get("task_id") or "")
+            if task_id:
+                logger.info(f"Using existing task {task_id} instead of creating new one")
+                client.update_task(TASKADE_PROJECT_ID, task_id, content_md)
+                print(json.dumps({"TASKADE_TASK_ID": task_id}))
+                return 0
+
+        # Create new task if truly none found
+        logger.info("No existing KTM dashboard tasks found. Creating a new dashboard task.")
         created = client.create_task(TASKADE_PROJECT_ID, content_md, DASHBOARD_TITLE)
         new_id = str(created.get("id") or created.get("task_id") or "")
         if new_id:
